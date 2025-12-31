@@ -13,7 +13,7 @@ Before running the scraper, you need to install **Node.js**. This is the engine 
 2.  **Install it:**
     *   Run the downloaded `.msi` file.
     *   Click "Next" through the setup wizard.
-    *   **Important:** Make sure "Add to PATH" is selected (it usually is by default).
+    *   **Important:** Ensure "Add to PATH" is selected (it usually is by default).
 3.  **Verify Installation:**
     *   Press `Windows Key + R`, type `cmd`, and press Enter.
     *   In the black box, type: `node -v` and press Enter.
@@ -79,7 +79,7 @@ This installs the extra tools the scraper needs (like the browser automation).
 
 ## ▶️ How to Run
 
-To start the scraper, make sure your terminal (or PowerShell) is still open in the folder, and run:
+To start the scraper, ensure your terminal (or PowerShell) is still open in the folder, and run:
 
 ```bash
 npm run scrape
