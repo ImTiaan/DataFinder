@@ -1,0 +1,15 @@
+# Ignore the actual environment variables file to protect secrets
+.env
+
+# Ignore any other environment files except the example one
+.env.*
+!.env.example
+
+# Ignore the output directory where scraped CSVs are saved
+outputs/
+
+# Ignore the persistent browser profile directory (contains cookies/cache)
+.browser_profile/
+
+# Ignore Node.js dependencies
+node_modules/

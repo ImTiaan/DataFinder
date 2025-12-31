@@ -1,0 +1,13 @@
+{
+  "name": "test-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scrape": "node scrape.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "playwright": "^1.47.0"
+  }
+}
