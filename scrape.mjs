@@ -100,7 +100,7 @@ async function main() {
 
     // Branch 1: Sitemap Crawling Mode
     if (crawlSitemap) {
-      const base = (url || 'https://thepihut.com').trim() // Get base URL
+      const base = (url || 'https://sxpro.co.uk/').trim() // Get base URL
       const sitemapUrl = (base.replace(/\/+$/, '') + '/sitemap.xml').trim() // Construct sitemap URL
       console.log(`Fetching sitemap from ${sitemapUrl}...`) // Log status
       
@@ -110,31 +110,40 @@ async function main() {
       // Extract all <loc> URLs from main sitemap
       const locs = []
       {
-        const re = /<loc>([^<]+)<\/loc>/g // Regex to match <loc> tags
+        const re = /<loc>([^<]+)<\/loc>/g
         let m
-        while ((m = re.exec(xml))) locs.push(m[1]) // Push found URLs
+        while ((m = re.exec(xml))) locs.push(m[1])
       }
       
-      // Find product-specific sitemaps (Shopify structure usually has sitemap_products_1.xml)
-      let productSitemaps = locs.filter((l) => l.includes('sitemap_products'))
-      if (productSitemaps.length === 0) productSitemaps = locs // Fallback to all locs if no product sitemaps found
+      // Check if this is a sitemap index (contains other sitemaps) or a urlset (direct links)
+      let productSitemaps = locs.filter((l) => l.includes('sitemap_products') || l.includes('product-sitemap'))
       
-      const productUrlsSet = new Set() // Use Set to avoid duplicate URLs
+      // If no sub-sitemaps found, assume the main sitemap IS the list (flat sitemap)
+      if (productSitemaps.length === 0) {
+          console.log('No sub-sitemaps found, assuming flat sitemap structure...')
+          productSitemaps = [sitemapUrl] // Use the main sitemap URL itself to re-parse for products
+      }
       
-      // Iterate through each product sitemap
+      const productUrlsSet = new Set()
+      
       for (const sm of productSitemaps) {
-        const r = await page.goto(sm, { waitUntil: 'load' }) // Visit sub-sitemap
-        const x = await r.text() // Get XML content
+        // If we already have the content from the main sitemap and it's flat, use it directly
+        let x = xml
+        if (sm !== sitemapUrl) {
+            const r = await page.goto(sm, { waitUntil: 'load' })
+            x = await r.text()
+        }
         
-        // Extract product URLs from sub-sitemap
         const urls = []
         const re2 = /<loc>([^<]+)<\/loc>/g
         let m2
         while ((m2 = re2.exec(x))) urls.push(m2[1])
         
-        // Filter for URLs containing '/products/'
         for (const u of urls) {
-          if (u.includes('/products/')) productUrlsSet.add(u)
+          // Shopify uses /products/, WordPress/WooCommerce often uses /product/
+          if (u.includes('/products/') || u.includes('/product/')) {
+              productUrlsSet.add(u)
+          }
         }
       }
       
@@ -272,14 +281,30 @@ async function main() {
                   (priceMeta && priceMeta.getAttribute('content')) ||
                   (priceItemprop && (priceItemprop.getAttribute('content') || (priceItemprop.textContent || '').trim())) ||
                   ''
+                
+                if (!price) {
+                  // Try WooCommerce specific selectors
+                  const wooPrice = document.querySelector('.price > ins > .amount') || 
+                                   document.querySelector('.price > .amount') || 
+                                   document.querySelector('.woocommerce-Price-amount')
+                  if (wooPrice) price = wooPrice.innerText
+                }
+
                 if (!price) {
                   const priceEl =
                     document.querySelector('[itemprop="price"]') ||
                     document.querySelector('.price') ||
                     document.querySelector('.product-price')
                   const raw = priceEl ? (priceEl.textContent || '').trim() : ''
-                  const m = raw && raw.match(/(\d+(?:\.\d+)?)/) // Regex for number
-                  price = m ? m[1] : raw
+                  
+                  // Extract all numbers that look like prices
+                  const matches = raw.match(/(\d+(?:[.,]\d{2})?)/g)
+                  if (matches && matches.length > 0) {
+                      // If multiple prices (e.g. "Was £100 Now £80"), usually the last one is the current price
+                      price = matches[matches.length - 1]
+                  } else {
+                      price = raw
+                  }
                 }
                 extracted.price = price
               }
@@ -290,14 +315,25 @@ async function main() {
                   document.querySelector('[data-stock]') ||
                   document.querySelector('.availability') ||
                   document.querySelector('.stock-status') ||
-                  document.querySelector('.product-form__inventory')
+                  document.querySelector('.product-form__inventory') ||
+                  document.querySelector('.stock') || // WooCommerce standard
+                  document.querySelector('.in-stock') ||
+                  document.querySelector('.out-of-stock') ||
+                  document.querySelector('.backorder')
                 
                 let text = availEl ? (availEl.textContent || '').trim() : ''
                 
                 // Regex fallback for availability in body text
                 if (!text) {
                   const bodyText = document.body.innerText
-                  const stockMatch = bodyText.match(/Stock:\s*([^\n]+)/i) || bodyText.match(/Availability:\s*([^\n]+)/i)
+                  const stockMatch = bodyText.match(/Stock:\s*([^\n]+)/i) || 
+                                     bodyText.match(/Availability:\s*([^\n]+)/i) ||
+                                     // Common button texts or status messages
+                                     bodyText.match(/(In Stock)/i) ||
+                                     bodyText.match(/(Out of Stock)/i) ||
+                                     bodyText.match(/(Backorder)/i) ||
+                                     bodyText.match(/(Available to Order)/i)
+
                   if (stockMatch) text = stockMatch[1].trim()
                   
                   // Specific check for "Only X units left" implies InStock
@@ -308,10 +344,13 @@ async function main() {
 
                 // Normalize text to standard status
                 if (text) {
-                    if (text.toLowerCase().includes('in stock') || text.includes('units left')) {
+                    const t = text.toLowerCase()
+                    if (t.includes('in stock') || t.includes('units left')) {
                         extracted.availability = 'InStock'
-                    } else if (text.toLowerCase().includes('out of stock') || text.toLowerCase().includes('sold out')) {
+                    } else if (t.includes('out of stock') || t.includes('sold out')) {
                         extracted.availability = 'OutOfStock'
+                    } else if (t.includes('backorder') || t.includes('available to order')) {
+                        extracted.availability = 'BackOrder'
                     } else {
                         extracted.availability = text
                     }
