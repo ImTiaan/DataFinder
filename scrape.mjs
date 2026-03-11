@@ -77,6 +77,58 @@ async function main() {
       ? String(args.headless).toLowerCase() === 'true' // Parse from args
       : String(process.env.HEADLESS || 'false').toLowerCase() === 'true' // Parse from env
 
+  const concurrency =
+    args.concurrency !== undefined
+      ? parseInt(String(args.concurrency), 10) || 1
+      : parseInt(String(process.env.SCRAPE_CONCURRENCY || '1'), 10) || 1
+  const delayMinMs =
+    args.delayMinMs !== undefined
+      ? parseInt(String(args.delayMinMs), 10) || 0
+      : parseInt(String(process.env.SCRAPE_DELAY_MS_MIN || '800'), 10) || 0
+  const delayMaxMs =
+    args.delayMaxMs !== undefined
+      ? parseInt(String(args.delayMaxMs), 10) || 0
+      : parseInt(String(process.env.SCRAPE_DELAY_MS_MAX || '1500'), 10) || 0
+  const backoffMinMs =
+    args.backoffMinMs !== undefined
+      ? parseInt(String(args.backoffMinMs), 10) || 0
+      : parseInt(String(process.env.SCRAPE_BACKOFF_MS_MIN || '5000'), 10) || 0
+  const backoffMaxMs =
+    args.backoffMaxMs !== undefined
+      ? parseInt(String(args.backoffMaxMs), 10) || 0
+      : parseInt(String(process.env.SCRAPE_BACKOFF_MS_MAX || '30000'), 10) || 0
+  const maxRetries =
+    args.maxRetries !== undefined
+      ? parseInt(String(args.maxRetries), 10) || 0
+      : parseInt(String(process.env.SCRAPE_MAX_RETRIES || '3'), 10) || 0
+  const circuitBreakerMaxConsecutiveFailures =
+    args.circuitBreakerFailures !== undefined
+      ? parseInt(String(args.circuitBreakerFailures), 10) || 0
+      : parseInt(String(process.env.SCRAPE_CIRCUIT_BREAKER_FAILURES || '10'), 10) || 0
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const randInt = (min, max) => {
+    const lo = Math.min(min, max)
+    const hi = Math.max(min, max)
+    if (hi <= lo) return lo
+    return lo + Math.floor(Math.random() * (hi - lo + 1))
+  }
+  const withRetries = async (fn) => {
+    let attempt = 0
+    for (;;) {
+      try {
+        return await fn(attempt)
+      } catch (e) {
+        if (attempt >= maxRetries) throw e
+        const exp = backoffMinMs > 0 ? backoffMinMs * Math.pow(2, attempt) : 0
+        const cap = backoffMaxMs > 0 ? Math.min(backoffMaxMs, exp) : exp
+        const waitMs = cap > 0 ? randInt(backoffMinMs, cap) : 0
+        if (waitMs > 0) await sleep(waitMs)
+        attempt++
+      }
+    }
+  }
+
   // Validate required arguments based on mode
   if (!crawlSitemap && (!url || !selector)) {
     console.error('Usage: node scrape.mjs --url <URL> --selector <CSS> [--loginUrl <LOGIN_URL>] [--headless <true|false>] [--crawlSitemap <true|false>] [--maxProducts <N>]')
@@ -161,7 +213,8 @@ async function main() {
       const header = 'name,sku,price,availability\n' // CSV header
       fs.writeFileSync(file, header) // Write header to new file
       
-      const BATCH_SIZE = 10 // Number of concurrent tabs
+      const BATCH_SIZE = Math.max(1, concurrency) // Number of concurrent tabs
+      let consecutiveFailures = 0
       
       // Process products in batches
       for (let i = 0; i < limit; i += BATCH_SIZE) {
@@ -174,11 +227,12 @@ async function main() {
           }
           const p = await context.newPage() // Open new tab for this product
           try {
-            // Navigate to product page with 60s timeout
-            await p.goto(u, { waitUntil: 'domcontentloaded', timeout: 60000 })
-            
-            // Extract data from page context
-            const info = await p.evaluate(() => {
+            const jitter = delayMaxMs > 0 ? randInt(delayMinMs, delayMaxMs) : 0
+            if (jitter > 0) await sleep(jitter)
+
+            const info = await withRetries(async () => {
+              await p.goto(u, { waitUntil: 'domcontentloaded', timeout: 60000 })
+              return await p.evaluate(() => {
               // Helper to decode HTML entities (e.g., &quot; -> ")
               function decodeHtml(html) {
                 if (!html) return ''
@@ -387,10 +441,16 @@ async function main() {
               }
 
               return extracted // Return final data object
+              })
             })
+            consecutiveFailures = 0
             return info
           } catch (e) {
             console.error(`Failed to scrape ${u}: ${e.message}`) // Log error
+            consecutiveFailures++
+            if (circuitBreakerMaxConsecutiveFailures > 0 && consecutiveFailures >= circuitBreakerMaxConsecutiveFailures) {
+              throw new Error(`Circuit breaker tripped after ${consecutiveFailures} consecutive failures`)
+            }
             return null
           } finally {
             await p.close() // Close tab to free memory
